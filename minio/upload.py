@@ -22,17 +22,14 @@ class UploadPool:
         self.s = 0
         self._pbar = tqdm.tqdm(total=0)
         self._isend = False
-        self._total = 0
+        self.total = 0
         self._find_end = False
         self.path = [local_path, bucket_name, minio_path]
-
-    
-        
 
 
     def run(self, q=0) -> None: # thread function for each thread.  takes items from queue and puts them in minio server.  then puts
         queue = self.queues[q]
-        print('%d start' % q)
+        # print('%d start' % q)
         while True:
             item = queue.get()
             try: # try catch for minio client.  if it fails, put it back on the queue for another thread to take it from.  if it
@@ -51,7 +48,7 @@ class UploadPool:
             
     def upload(self, bucket_name, remote_path, local_file):
         self.s += 1
-        self.s %= len(self.t)
+        self.s %= len(self.queues)
         self.queues[self.s].put((bucket_name, remote_path, local_file), block=False)
         # random.choice(self.queues) # if all threads are busy, put the item in the
 
@@ -67,18 +64,14 @@ class UploadPool:
         self._find_end = True
 
     def start(self):
-        self.find()
+        
         for t in self.threads: t.start() # start threads.
-        for t in self.threads: t.join() # wait for threads to finish.
         bar_thread = threading.Thread(target=self.pbar) # create a thread to print the progress bar.
         bar_thread.start()
-        bar_thread.join()
-
+        self.find()
         while True:
-            if not self._find_end:
-                continue
-            
-            isend = self._total <= (self.sucess_count + self.error_count) # if all files are successfully upload, break the loop.  if all files fail, break
+           
+            isend = self.total <= (self.sucess_count + self.error_count) # if all files are successfully upload, break the loop.  if all files fail, break
 
             if isend:
                 break
@@ -99,7 +92,7 @@ class UploadPool:
 
     def _find(self, local_path, bucket_name, minio_path):
         assert os.path.isdir(local_path)
-
+        # print(local_file)
         for local_file in glob.glob(local_path + '/**'):
             # print(local_file)
             local_file = local_file.replace(os.sep, "/") # Replace \ with / on Windows
@@ -112,19 +105,21 @@ class UploadPool:
                 remote_path = remote_path.replace(
                     os.sep, "/")  # Replace \ with / on Windows
                 self.upload(bucket_name, remote_path, local_file)
-                self._total += 1
+                self.total += 1
                 
     def pbar(self):
         while not self._isend:
-            time.sleep(1)
+            time.sleep(0.03)
+            # print(f"{self.sucess_count} files successfully stored.  {self.error_count} files failed to upload.  {self.total} files find" )
             self._pbar.set_postfix(
                 dict(
-                    succ=self.sucess_count, err=self.error_count, tot=self._total
+                    succ=self.sucess_count, err=self.error_count, tot=self.total
                 )
             )
         
 
-if __name__ == '__main___':
+# print(__name__)
+if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(
         'MinIO 文件上传助手，用于文件夹上传，使用多线程方式上传。该脚本在查找到文件后会立即上传，不会进行时间统计，也无法统计准确时间。上传失败的文件不会重试，但可以保存错误文件列表', 
@@ -174,8 +169,9 @@ if __name__ == '__main___':
     try:
         if not client.bucket_exists(args.bucket):
             client.make_bucket(args.bucket)
-    
+        print('Start')
         tool = UploadPool(client, args.dir, args.bucket, args.remote_path, args.threads)
+        
         tool.start()
         
     except Exception as e: # This exception handling should be generic and catch all exceptions. 如果出现某些错误，则应显示错误
