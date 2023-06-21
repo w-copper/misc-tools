@@ -68,6 +68,5 @@ if __name__ == '__main__':
 
 
     args = parser.parse_args()
-    print(args)
-
+   
     dsm2json(args.input, args.output, args.res, args.rect)
