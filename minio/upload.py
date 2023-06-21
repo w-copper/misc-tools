@@ -80,13 +80,14 @@ class UploadPool:
 
         for t in self.threads:
             del t
-
+        
         with open("log-%d.txt"%(time.time() * 1000), "w") as logfile: 
             if len(self.errors) > 0:
                 for item, e in self.errors:
                     logfile.write(f"{item}\t{e}\n")
                 logfile.flush() # flush the logfile buffer.  this is important.  if there are large files, this can cause a memory
 
+        del bar_thread
 
 
 
@@ -111,12 +112,13 @@ class UploadPool:
         while not self._isend:
             time.sleep(0.03)
             # print(f"{self.sucess_count} files successfully stored.  {self.error_count} files failed to upload.  {self.total} files find" )
+            
             self._pbar.set_postfix(
                 dict(
                     succ=self.sucess_count, err=self.error_count, tot=self.total
                 )
             )
-        
+            
 
 # print(__name__)
 if __name__ == '__main__':
@@ -166,6 +168,7 @@ if __name__ == '__main__':
         access_key=args.accesskey,
         secret_key=args.secretkey
     )
+    # client.get_object()
     try:
         if not client.bucket_exists(args.bucket):
             client.make_bucket(args.bucket)
