@@ -11,6 +11,7 @@ from pyproj import CRS, Transformer
 import xmltodict
 from collections import defaultdict
 from collections import Counter
+
 def read_objs(scene, pths):
 
     for p in tqdm.tqdm(pths, desc='Read OBJ files'):
@@ -400,6 +401,14 @@ def view_ccobjs(cc_data, sub = None, camera = None):
 
 
     return pyrender.Viewer(scene, use_raymond_lighting=True, run_in_thread=True)
+
+
+def  mesh_to_bbox(sence:trimesh.Scene):
+    bbox_sence = trimesh.Scene()
+
+    for name in sence.geometry:
+        mesh:trimesh.Trimesh = sence.geometry[name]
+        bbox_sence.add(mesh.bound)
 
 
 
