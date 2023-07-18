@@ -44,6 +44,21 @@ def read_objs_to_scene(pths):
 
     return scene
 
+def read_objs_to_list(pths):
+    meshes = []
+    for p in tqdm.tqdm(pths, desc='Read OBJ files'):
+        mesh:trimesh.Trimesh = trimesh.load(p)
+        if isinstance(mesh, trimesh.Scene):
+            for s in mesh.geometry:
+                meshes.append(mesh.geometry[s])
+        elif isinstance(mesh, trimesh.Trimesh):
+            # mesh = pyrender.Mesh.from_trimesh(mesh, smooth=False)
+            meshes.append(mesh)
+        else:
+            raise  Exception('Not supported format', mesh)
+
+    return meshes
+
 def get_matrix(zrot = 0, yrot = 0, xrot = 0, pos = np.zeros(3)):
    '''
    xyzrot: 顺时针旋转角度,单位为度
@@ -77,41 +92,149 @@ def get_matrix(zrot = 0, yrot = 0, xrot = 0, pos = np.zeros(3)):
    matrix[-1,-1] = 1
    # matrix[-1,-1] = 1
    return matrix
+ 
+def get_corner_rays(width, height, yfov, matrix = None):
+    if matrix is None:
+        matrix = np.eye(4)
+    xx, yy  = np.meshgrid([0 ,width ], [0 ,height ])
+    z = - height / 2 / np.tan(yfov / 2)
+    target = np.ones((4, 3))
+    target[:,0] = xx.flatten() - width / 2
+    target[:,1] = yy.flatten() - height / 2
+    target[:, 2] = z
+    origin = matrix[:3, 3]
+    target = np.dot(matrix[:3,:3], target.T)
+    origin = origin.reshape((1, 3)).repeat(4, axis=0)
+    target = target.T
+    # target = trimesh.transform_points(target, np.linalg.inv(matrix))
+    return origin, target
+
+def compute_zmin_zmax(meshes):
+    
+    zmin, zmax = np.inf, -np.inf
+    for mesh in meshes:
+        if zmin > mesh.bounds[0, 2]:
+            zmin = mesh.bounds[0, 2]
+        if zmax < mesh.bounds[1, 2]:
+            zmax = mesh.bounds[1, 2]
+    
+    return zmin, zmax
+
+def get_visual_geom(width, height, yfov, zmin, matrix = None, strict_front = True):
+    
+    origin, target = get_corner_rays(width, height, yfov, matrix = matrix)
    
-def render_one(scene:pyrender.Scene, camera):
-    camera_instance = pyrender.PerspectiveCamera(camera['yfov'], aspectRatio=camera['aspec'])
-    if camera['postype'] == 'matrix':
-        camera_pose = camera['matrix']
-    elif camera['postype'] == 'angles':
-        camera_pose = get_matrix(camera['yaw'], camera['pitch'], camera['roll'], camera['pos'])
-    else:
-        raise NotImplementedError(f"Camera postype {camera['postype']}")
-    render = pyrender.OffscreenRenderer(camera['width'], camera['height'])
-
-    camera_node = scene.add(camera_instance,  pose=camera_pose)
-    color, depth = render.render(scene)
-    render.delete()
-    scene.remove_node(camera_node)
-    return color, depth
-
-def main_loop(objpaths, camreas, out_dir,  
-              save_depth = False, bgcolor = (0,0,1.0,0.0), lightcolor = (1.0,1.0,1.0)):
+    tmin = (zmin - origin[:, 2]) / target[:, 2] 
+    tmin = tmin[:, None].repeat(3, axis=1)
+    if strict_front and np.any(tmin < 0) :
+        return None
+    interpoints = origin +  tmin * target
     
+    vertexs = [
+        origin[0, :].reshape(-1, 3),
+        interpoints
+    ]
+    vertexs = np.concatenate(vertexs, axis=0)
+    faces = [
+        [0, 1, 2],
+        [0, 2, 4],
+        [0, 3, 1],
+        [0, 4, 3],
+        [1, 3, 2],
+        [2, 3, 4]
+    ]
+    mesh = trimesh.Trimesh(
+        vertices=vertexs, faces=faces,
+        vertex_colors=(1.0, 0.0, 0.0)
+    )
+    mesh.fix_normals()
+    return mesh
+
+
+def get_meshes_bounds_points(meshes):
+    points = []
+    for mesh in meshes:
+        bound = mesh.bounding_box.vertices
+        points.append(bound)
     
-    scene = pyrender.Scene(bg_color=bgcolor)
+    points = np.concatenate(points, axis=0)
+
+    return points
+
+def get_vis_meshs(meshes:list, visual_geom:trimesh.Trimesh, bound_points):
+    is_visual = visual_geom.ray.contains_points(bound_points)
+    count = len(meshes)
+    is_visual = np.reshape(is_visual, (count, -1))
+    is_visual = np.any(is_visual, axis=1)
+    nmesh = []
+    for i in range(count):
+        if is_visual[i]:
+            nmesh.append(meshes[i])
+    
+    return nmesh
+
+
+
+def render_vis(objpaths, camreas, out_dir,  
+              save_depth = False,
+              save_dsm = False, bgcolor = (0,0,1.0,0.0), lightcolor = (1.0,1.0,1.0),
+              skip_exist = False):
+    
     light = pyrender.DirectionalLight(color=lightcolor, intensity=5.0)
-    scene.add(light)
-    scene = read_objs(scene, objpaths)
-
+    meshes = read_objs_to_list(objpaths)
     os.makedirs(out_dir, exist_ok=True)
-
+    zmin, zmax = compute_zmin_zmax(meshes)
+    bound_points = get_meshes_bounds_points(meshes)
     for i,camera in tqdm.tqdm(enumerate(camreas), desc='Start rendering'):
-        color, depth = render_one(scene, camera)
+        image_file = os.path.join(out_dir, '%d_%s.jpg'%(i, camera['fname']))
+        if skip_exist and  os.path.exists(image_file):
+            continue
+
+        camera_instance = pyrender.PerspectiveCamera(camera['yfov'], aspectRatio=camera['aspec'])
+        if camera['postype'] == 'matrix':
+            camera_pose = camera['matrix']
+        elif camera['postype'] == 'angles':
+            camera_pose = get_matrix(camera['yaw'], camera['pitch'], camera['roll'], camera['pos'])
+        else:
+            raise NotImplementedError(f"Camera postype {camera['postype']}")
+
+        visual_geom = get_visual_geom(camera['width'], camera['height'], camera['yfov'], zmin, camera_pose)
+        dsm = None
+        if visual_geom is None:
+            color = np.zeros((camera['height'], camera['width'], 3)).astype(np.uint8)
+            depth = np.zeros((camera['height'], camera['width']))
+            
+        else:
+            visual_meshes = get_vis_meshs(meshes, visual_geom, bound_points)
+            scene = pyrender.Scene.from_trimesh_scene(
+                trimesh.Scene(visual_meshes), bg_color=bgcolor
+            )
+            scene.add(light)
+            scene.add(camera_instance,  pose=camera_pose)
+            render = pyrender.OffscreenRenderer(camera['width'], camera['height'])
+            color, depth = render.render(scene)
+            render.delete()
+            scene.clear()
+            if save_dsm:
+                dsm = depth_to_dsm(depth, camera_pose, camera_instance.get_projection_matrix())
+            del scene
+            del render
+            del visual_geom
+        
         if save_depth:
             depth_file = os.path.join(out_dir, '%d_%s_depth.tif'%(i, camera['fname']))
             Image.fromarray(depth).save(depth_file)
+        if save_dsm:
+            if dsm is None:
+                dsm = np.zeros_like(depth)
+            dsm_file = os.path.join(out_dir, '%d_%s_depth.tif'%(i, camera['fname']))
+            Image.fromarray(dsm).save(dsm_file)
+
         image_file = os.path.join(out_dir, '%d_%s.jpg'%(i, camera['fname']))
         Image.fromarray(color).save(image_file)
+
+        
+
 
 def load_productions(root_data_path, sub=None):
     paths = os.listdir(root_data_path)
@@ -250,56 +373,6 @@ def parser_ccxml(ccxml_path, metadata_path):
     
 import functools
 
-def random_render( scene:pyrender.Scene, count = 0, 
-                    yfov = [50, 150],
-                    zrot = [0, 360],
-                    xrot = [-60, 60],
-                    yrot = [-60, 60],
-                    width = 500,
-                    height = 500
-                    ):
-    
-    if count <= 0:
-        count = np.inf
-    
-    def get_rand(r):
-        if isinstance(r, (tuple, list)):
-            return np.random.rand() * (r[1] - r[0]) + r[0]
-        elif isinstance(r, (int,float)):
-            return r
-        else:
-            raise NotImplementedError(f"Cannot handle type {type(r)}")
-
-    rand_yfov = functools.partial(get_rand, yfov)
-    rand_zrot = functools.partial(get_rand, zrot)
-    rand_xrot = functools.partial(get_rand, xrot)
-    rand_yrot = functools.partial(get_rand, yrot)
-    rand_width = 	functools.partial(get_rand, width)
-    rand_height = functools.partial(get_rand, height)
-    # rand_aspect = functools.partial(get_rand, aspect)
-
-    def rand_pos():
-        '''
-        TODO: fix it
-        '''
-        return scene.centroid
-
-    c = 0
-    while c < count:
-        width, height = rand_width(), rand_height()
-        yfov = rand_yfov() / 180.0 * np.pi
-        camera = pyrender.PerspectiveCamera(yfov=yfov, aspectRatio=width / height)
-        matrix = get_matrix(rand_zrot(), 	rand_yrot(), 	rand_xrot(), rand_pos())
-        camera_node = scene.add(camera, pose=matrix)
-        render = pyrender.OffscreenRenderer()
-        color, depth = render.render(scene)
-        render.delete()
-        scene.remove_node(camera_node)
-
-        yield color, depth, matrix, yfov
-        
-        c += 1
-
 import copy
 
 def remap_one(obj:trimesh.Trimesh, img:np.array, matrix:np.array, yfov:float, to_vers = True, to_face = False):
@@ -324,7 +397,7 @@ def remap_one(obj:trimesh.Trimesh, img:np.array, matrix:np.array, yfov:float, to
     origin = origin.reshape(1,3)
     origin = np.repeat(origin, xyz.shape[0], axis=0) # N x 3
 
-    tri_indexs, ray_indexs, locations = obj.ray.intersects_id(origin, direction, return_locations=True, multiple_hist = False) # N
+    tri_indexs, ray_indexs, locations = obj.ray.intersects_id(origin, direction, return_locations=True, multiple_hits = False) # N
     hh = hh[ray_indexs]
     ww = ww[ray_indexs]
     colors = img[hh, ww,:] # K x 3
@@ -403,14 +476,29 @@ def view_ccobjs(cc_data, sub = None, camera = None):
     return pyrender.Viewer(scene, use_raymond_lighting=True, run_in_thread=True)
 
 
-def  mesh_to_bbox(sence:trimesh.Scene):
-    bbox_sence = trimesh.Scene()
+def depth_to_dsm(depth, camera_matrix, proj_matrix):
+    height, width = depth.shape
+    xx, yy  = np.meshgrid(np.arange(0, width), np.arange(0, height))
+    xx = xx.flatten() - width / 2.0
+    yy = height / 2.0 - yy.flatten()  
+    xyz = np.zeros((width * height, 3))
+    xyz[:, 0] = xx / (width /  2)
+    xyz[:, 1] = yy / (height  / 2)
+    xyz[:, 2] = depth.flatten()
+    z = -(depth.flatten()  -  proj_matrix[2,3])
+    k = - proj_matrix[2,3] / z + 1
+    xyz[:, 2] = k
 
-    for name in sence.geometry:
-        mesh:trimesh.Trimesh = sence.geometry[name]
-        bbox_sence.add(mesh.bound)
+    stack = np.column_stack([xyz, np.ones(xyz.shape[0])])
+    stack = - stack * z[:, None]
+    stack = np.linalg.inv(proj_matrix)  @ stack.T
+    xyz = stack.T[:, :3]
+    xyz = trimesh.transform_points(xyz, camera_matrix)
 
-
+    dsm = xyz[:,2]
+    dsm = dsm.reshape((height, width))
+   
+    return dsm
 
 if __name__ == '__main__':
 
@@ -422,9 +510,11 @@ if __name__ == '__main__':
     parser.add_argument('-x',  '--export-xml', type=str, help='导出的xml文件位置')
     parser.add_argument('-o', '--outdir', 	type=str, 	help='保存的目录')
     parser.add_argument('--depth', default=False, action='store_true', help='是否保存深度信息')
+    parser.add_argument('--dsm', default=False, action='store_true', help='是否保存DSM信息')
     parser.add_argument('--bgcolor', 	type=float, nargs=4, default=(0.0, 0.0, 0.0, 0), help='背景颜色')
     parser.add_argument('--sub', type=int, default=None)
-
+    parser.add_argument('--skip-exist', default=False, action='store_true')
+    parser.add_argument('--pose-only', default=False, action='store_true')
     args = parser.parse_args()
 
     cameras = parser_ccxml(args.export_xml, 
@@ -432,7 +522,7 @@ if __name__ == '__main__':
     sub = None if args.sub is None else slice(args.sub)
     objs = load_productions(args.data_root, sub=sub)
 
-    main_loop(objs, cameras, args.outdir, save_depth=args.depth, bgcolor=args.bgcolor)
+    render_vis(objs, cameras, args.outdir, save_depth=args.depth, bgcolor=args.bgcolor, skip_exist = args.skip_exist)
 
     # for camera in cameres:
     #     print(camera)
