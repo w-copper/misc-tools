@@ -702,7 +702,7 @@ def generate_orth(bboxs, size = 50):
 
 import cachetools
 
-@cachetools.cached(cachetools.LRUCache(maxsize=1000))
+# @cachetools.cached(cachetools.LRUCache(maxsize=1000))
 def load_mesh(pth):
     print('load %s'%pth)
     if pth.endswith('.json'):
@@ -860,9 +860,6 @@ def orth_3dtile_with_coords(meshes, bgcolor = (0,0,0.0,0.0),
     color, depth = render.render(scene)
     render.delete()
     scene.clear()
-    # import matplotlib.pyplot as plt
-    # plt.imshow(color)
-    # plt.show()
     dsm = orth_depth_to_dsm(depth,camera_pose, camera_instance.get_projection_matrix())
     bounds = trimesh.transform_points(bounds, transform)
     if is_xyz:
