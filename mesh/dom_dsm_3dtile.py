@@ -55,17 +55,21 @@ def for_xuanen(root, output):
     root_json = os.path.join(root, 'tileset.json')
 
     transform = mt.load_tileset_transform(root_json) 
-    with tempfile.TemporaryDirectory(dir='.') as tmpdirname:
-        files = []
+    with tempfile.TemporaryDirectory(dir='D:/') as tmpdirname:
+        doms = []
+        dsms = []
         for i, s in tqdm.tqdm(list(enumerate(subs)), desc='rendering'):
             f = os.path.join(tmpdirname, '%d.tif'%i)
-            mt.orth_3dtile_with_coords([s], transform=transform, epsg=4326, out=f)
-            files.append(f)
+            domf, dsmf = mt.orth_3dtile_with_coords([s], transform=transform, epsg=4326, out=f, intensity=1, resolution=0.1)
+            doms.append(domf)
+            dsms.append(dsmf)
         print('start merge')
-        batch_merge_files(files, output)
+        batch_merge_files(doms, os.path.splitext(output)[0] + '_dom.tif')
+        batch_merge_files(dsms, os.path.splitext(output)[0] + '_dsm.tif')
     
 
 
 if __name__ == '__main__':
 
-    for_xuanen('E:/xuanen/data', 'E:/xuanen/merge.tif')
+    for_xuanen('E:/xuanen/3dtiles', 'E:/xuanen/3dtiles/xuanen.tif')
+    # files = glob.glob("D:/tmpy7dj1fk3/*.tif")

@@ -700,11 +700,10 @@ def generate_orth(bboxs, size = 50):
 
     z = max_b[2] + 10
 
-import cachetools
-
+import cachetools 
 # @cachetools.cached(cachetools.LRUCache(maxsize=1000))
 def load_mesh(pth):
-    print('load %s'%pth)
+    # print('load %s'%pth)
     if pth.endswith('.json'):
         mesh = load_tileset_json_to_trimesh(pth)
         mesh = trimesh.Scene(mesh)
@@ -714,7 +713,7 @@ def load_mesh(pth):
         mesh = trimesh.load(pth)
     else:
         raise NotImplementedError('Unknown mesh format %s'%pth)
-    print('end %s'%pth)
+    # print('end %s'%pth)
     return mesh
 
 
@@ -835,13 +834,16 @@ def render_loop(cfg, bgcolor = (0,0,1.0,0.0),
         Image.fromarray(depth).save(os.path.join(out, '%08d_depth.tif'%i))
         Image.fromarray(dsm).save(os.path.join(out, '%08d_dsm.tif'%i))
 
-
+'''
+Pyrender 的offscreenRenderer 渲染效果不行
+TODO: 改为open3d
+'''
 def orth_3dtile_with_coords(meshes, bgcolor = (0,0,0.0,0.0), 
-              lightcolor = (1.0,1.0,1.0), resolution = 0.2, out = '', is_xyz = True, transform = np.eye(4),  epsg = '4547'):
+              lightcolor = (1.0,1.0,1.0), intensity=10, resolution = 0.2, out = '', is_xyz = True, transform = np.eye(4),  epsg = '4547'):
     meshes =  [ load_mesh(p) for p in meshes ]
     tri_scene = trimesh.Scene(meshes)
     scene = pyrender.Scene.from_trimesh_scene(
-                tri_scene, bg_color=bgcolor
+                tri_scene, bg_color=bgcolor, ambient_light=bgcolor
             )
     center_pose = tri_scene.centroid
     bounds = tri_scene.bounds
@@ -851,7 +853,7 @@ def orth_3dtile_with_coords(meshes, bgcolor = (0,0,0.0,0.0),
     yl = length[1]
     camera_pose = get_matrix(0, 0,0, center_pose)
     camera_instance = pyrender.OrthographicCamera(xmag = xl / 2.0, ymag= yl/ 2.0, znear = 0.01, zfar = length[2] + 11 )
-    light = pyrender.DirectionalLight(color=lightcolor, intensity=35.0)
+    light = pyrender.DirectionalLight(color=lightcolor, intensity=intensity)
     scene.add(light)
     scene.add(camera_instance,  pose=camera_pose)
     width  = int(xl / resolution + 1)
@@ -863,9 +865,10 @@ def orth_3dtile_with_coords(meshes, bgcolor = (0,0,0.0,0.0),
     dsm = orth_depth_to_dsm(depth,camera_pose, camera_instance.get_projection_matrix())
     bounds = trimesh.transform_points(bounds, transform)
     if is_xyz:
-        trans1 = pyproj.Proj('EPSG:4978')
-        trans2 = pyproj.Proj('EPSG:%d'%epsg)
-        y, x, z = pyproj.transform(trans1, trans2, bounds[:,0], bounds[:,1], bounds[:, 2])
+        # trans1 = pyproj.Proj('EPSG:4978')
+        # trans2 = pyproj.Proj('EPSG:%d'%epsg)
+        trans = pyproj.Transformer.from_crs('EPSG:4978', 'EPSG:%d'%epsg)
+        y, x, z = trans.transform(bounds[:,0], bounds[:,1], bounds[:, 2])
         dx = np.abs(x[1] - x[0])
         dy = np.abs(y[1] - y[0])
         xres = dx / width
@@ -874,24 +877,34 @@ def orth_3dtile_with_coords(meshes, bgcolor = (0,0,0.0,0.0),
     else:
         geo = [ bounds[0,0], resolution, 0, bounds[1,1], 0, -resolution ]
     
-    dataset = gdal.GetDriverByName('GTiff').Create(out, width, height, 4, gdal.GDT_Float32)
+    basename = os.path.splitext(out)
+
+    dataset = gdal.GetDriverByName('GTiff').Create(basename[0] + '_dom.tif', width, height, 3, gdal.GDT_Byte)
     dataset.SetGeoTransform(geo)
     proj = osr.SpatialReference()
     proj.ImportFromEPSG(epsg)
     dataset.SetProjection(proj.ExportToWkt())
-    color = color.astype(np.float32) / 255.0
+    
     for i in range(3): 
-        c = color[:,:, i]
-        c[np.isnan(dsm)] = np.nan
         dataset.GetRasterBand(i+1).WriteArray( color[:,:,i])
     # dataset.GetRasterBand(1).WriteArray( color[:,:,0]) 
     # dataset.GetRasterBand(2).WriteArray( color[:,:,1])
     # dataset.GetRasterBand(3).WriteArray( color[:,:,2])
-    dataset.GetRasterBand(4).WriteArray( dsm )
+    dsmds = gdal.GetDriverByName('GTiff').Create(basename[0] + '_dsm.tif', width, height, 1, gdal.GDT_Float32)
+    dsmds.SetGeoTransform(geo)
+    dsmds.SetProjection(proj.ExportToWkt())
+    dsmds.GetRasterBand(1).WriteArray( dsm )
 
     del dataset
+    del dsmds
 
+    return basename[0] + '_dom.tif', basename[0] + '_dsm.tif'
 
+import open3d as o3d
+import open3d.visualization.rendering as rendering
+
+def o3d_dsm_dom_render(meshes):
+    pass
 
 
 
