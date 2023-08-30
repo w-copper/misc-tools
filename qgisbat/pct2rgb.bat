@@ -1,0 +1,1 @@
+python %~dp0\..\..\Scripts\pct2rgb.py %*
