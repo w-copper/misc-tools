@@ -847,7 +847,7 @@ def orth_3dtile_with_coords(meshes, bgcolor = (0,0,0.0,0.0),
             )
     center_pose = tri_scene.centroid
     bounds = tri_scene.bounds
-    center_pose[2] = bounds[1,2] + 10 # 上方10m处
+    center_pose[2] = bounds[1,2] + 0.2 # 上方0.2m
     length = bounds[1,:] - bounds[0,:]
     xl = length[0] 
     yl = length[1]
@@ -899,12 +899,6 @@ def orth_3dtile_with_coords(meshes, bgcolor = (0,0,0.0,0.0),
     del dsmds
 
     return basename[0] + '_dom.tif', basename[0] + '_dsm.tif'
-
-import open3d as o3d
-import open3d.visualization.rendering as rendering
-
-def o3d_dsm_dom_render(meshes):
-    pass
 
 
 
