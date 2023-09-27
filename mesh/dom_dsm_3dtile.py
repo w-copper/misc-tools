@@ -7,6 +7,7 @@ import tempfile
 
 import os
 import sys
+from osgeo import gdal
 
 def batch_merge(inputs, output):
     
@@ -23,26 +24,6 @@ def fund(listTemp, n):
     return resules
 
 
-def batch_merge_files(inputs, output):
-
-    if len(inputs) <= 10:
-        batch_merge(inputs, output)
-        return
-
-    with tempfile.TemporaryDirectory() as temp_dir:
-        i = 0
-        while True:
-            subs = fund(inputs, 10)
-            inputs = []
-            for s in subs:
-                f = os.path.join(temp_dir, '%d.tif'%i)
-                i+= 1
-                batch_merge(s, f)
-                inputs.append(f)
-            if len(inputs) <= 10:
-                batch_merge(inputs, output)
-                return
-
     
 def for_xuanen(root, output):
     folders = os.listdir(root)
@@ -55,21 +36,49 @@ def for_xuanen(root, output):
     root_json = os.path.join(root, 'tileset.json')
 
     transform = mt.load_tileset_transform(root_json) 
-    with tempfile.TemporaryDirectory(dir='D:/') as tmpdirname:
-        doms = []
-        dsms = []
-        for i, s in tqdm.tqdm(list(enumerate(subs)), desc='rendering'):
-            f = os.path.join(tmpdirname, '%d.tif'%i)
-            domf, dsmf = mt.orth_3dtile_with_coords([s], transform=transform, epsg=4326, out=f, intensity=1, resolution=0.1)
-            doms.append(domf)
-            dsms.append(dsmf)
-        print('start merge')
-        batch_merge_files(doms, os.path.splitext(output)[0] + '_dom.tif')
-        batch_merge_files(dsms, os.path.splitext(output)[0] + '_dsm.tif')
-    
+    os.makedirs(output, exist_ok=True)
+    doms = []
+    dsms = []
+    for i, s in tqdm.tqdm(list(enumerate(subs)), desc='rendering'):
+        f = os.path.join(output, '%d.tif'%i)
+        domf, dsmf = mt.orth_3dtile_with_coords([s], transform=transform, epsg=4326, out=f, intensity=10, resolution=0.1)
+        doms.append(domf)
+        dsms.append(dsmf)
 
+
+def build_vrt(root):
+    doms = glob.glob(os.path.join(root, '*_dom.tif'))
+    dsms = glob.glob(os.path.join(root, '*_dsm.tif'))
+    vrt_options = gdal.BuildVRTOptions(resampleAlg='nearest', addAlpha=False, srcNodata=0, VRTNodata=0, xRes=0.1, yRes=0.1, outputSRS='EPSG:4547', allowProjectionDifference=True)
+    dom_vrt = gdal.BuildVRT(os.path.join(root, 'dommerge.vrt'), doms, options=vrt_options)
+    dom_vrt = None
+
+    dsm_vrt = gdal.BuildVRT(os.path.join(root, 'dsmmerge.vrt'), dsms, options=vrt_options)
+    dsm_vrt = None
+
+def for_xuanen_inv(root, output):
+    folders = os.listdir(root)
+    subs = []
+    for folder in folders:
+        if folder.startswith('Tile'):
+            f = os.path.join(root, folder, folder + '.json')
+            subs.append(f)
+    
+    root_json = os.path.join(root, 'tileset.json')
+
+    transform = mt.load_tileset_transform(root_json) 
+    os.makedirs(output, exist_ok=True)
+    doms = []
+    dsms = []
+    for i, s in tqdm.tqdm(list(enumerate(subs)), desc='rendering'):
+        f = os.path.join(output, '%d.tif'%i)
+        domf, dsmf = mt.orth_invmesh_with_coords([s], transform=transform, epsg=4326, out=f, intensity=10, resolution=0.1)
+        doms.append(domf)
+        dsms.append(dsmf)
 
 if __name__ == '__main__':
 
-    for_xuanen('E:/xuanen/3dtiles', 'E:/xuanen/3dtiles/xuanen.tif')
+    # for_xuanen('E:/xuanen/data', 'E:/xuanen/domdsm')
+    for_xuanen_inv('E:/xuanen/data', 'E:/xuanen/domdsminv')
+    # build_vrt('E:/xuanen/domdsm')
     # files = glob.glob("D:/tmpy7dj1fk3/*.tif")

@@ -6,6 +6,8 @@ from trimesh import creation
 import trimesh.exchange.gltf as gltf
 import trimesh.exchange.ply as ply
 import trimesh.exchange.export as export
+from trimesh.visual import TextureVisuals
+from trimesh.visual.texture import SimpleMaterial
 import os
 import numpy as np
 import json
@@ -662,7 +664,7 @@ def orth_depth_to_dsm(depth, camera_matrix, proj_matrix, nodata = np.nan):
     xyz = np.zeros((width * height, 3))
     xyz[:, 0] = xx / (width /  2)
     xyz[:, 1] = yy / (height  / 2)
-    # xyz[:, 2] = -z.flatten()
+    # xyz[:, 2] = -depth.flatten()
 
     stack = np.column_stack([xyz, np.ones(xyz.shape[0])])
     stack = np.linalg.inv(proj_matrix)  @ stack.T
@@ -760,6 +762,91 @@ def mesh_info(paths, out):
     with open(out, 'w') as f:
         json.dump(bounds, f)
 
+def render_plane(meshes, plane:list, bgcolor = (0,0,1.0,0.0), 
+              lightcolor = (1.0,1.0,1.0), reslution = 0.1):
+
+    y = np.array([0,0,1])
+    z1 = np.cross(plane[0]-plane[1], plane[1] - plane[2])
+    x1 = -np.cross(y, z1)
+
+    z2 = -z1
+    x2 = -np.cross(y, z2)
+    points = np.array(plane)
+    center = points.mean(axis=0)
+
+    matrix1 = np.eye(4)
+    matrix1[:3,0] = x1
+    matrix1[:3,1] = y
+    matrix1[:3,2] = z1
+    matrix1[:3,3] = center + z1 * 0.01
+
+    matrix2 = np.eye(4)
+    matrix2[:3,0] = x2
+    matrix2[:3,1] = y
+    matrix2[:3,2] = z2
+    matrix2[:3,3] = center + z2 * 0.01
+
+    proj_points = trimesh.transform_points(points, matrix1)
+    proj_points = proj_points[:,:2]
+    bounds = [np.max(proj_points, axis=0), np.min(proj_points, axis=0)]
+    bounds = np.array(bounds)
+    xmag = bounds[0,0] - bounds[1,0]
+    ymag = bounds[0,1] - bounds[1,1]
+    xmag = xmag / 2
+    ymag = ymag / 2
+
+    meshes = [ load_mesh(m) for m in meshes]
+    tri_scene = trimesh.Scene(meshes)
+    scene = pyrender.Scene.from_trimesh_scene(tri_scene, bg_color=bgcolor)
+
+    camrea = pyrender.OrthographicCamera(xmag, ymag, znear=0.1, zfar=100)
+    node = scene.add(camrea, pose=matrix1)
+
+    light = pyrender.DirectionalLight(color=lightcolor, intensity=5.0)
+    scene.add(light)
+    scene.add(camrea,  pose=matrix1)
+
+    width = int(xmag / reslution * 2)
+    height = int(ymag / reslution * 2)
+
+    render = pyrender.OffscreenRenderer(width, height)
+    color1, depth1 = render.render(scene)
+    # render.delete()
+    # scene.clear()
+    scene.remove_node(node)
+
+    scene.add(camrea, pose=np.eye(4))
+    color2, depth2 = render.render(scene)
+    from shapely.geometry import Polygon
+    geom = creation.extrude_polygon(Polygon(proj_points), 0.02, transform=np.linalg.inv(matrix1))
+    
+    material = SimpleMaterial(image = Image.fromarray(np.vstack((color1, color2))))
+    # TODO: check point rings rank
+    uvs = []
+    for i in range(proj_points.shape[0]):
+        p = proj_points[i,:]
+        v = p[0] / xmag / 2
+        u = (1 - p[1] / ymag / 2)/2
+        uvs.append((u,v))
+    for i in range(proj_points.shape[0]):
+        p = proj_points[i,:]
+        v = p[0] / xmag / 2
+        u = 1 - p[1] / ymag / 4
+
+        uvs.append((u,v))
+    
+    uvs = np.array(uvs).reshape(-1,2)
+
+    visual = TextureVisuals(uv = uvs, material=material)
+    geom.visual = visual
+
+    return geom
+
+
+
+
+
+
 def render_prepare(info, gap = 5,  zgap = 5, buffer = 20, out = None):
     
     with open(info, 'r') as f:
@@ -834,10 +921,7 @@ def render_loop(cfg, bgcolor = (0,0,1.0,0.0),
         Image.fromarray(depth).save(os.path.join(out, '%08d_depth.tif'%i))
         Image.fromarray(dsm).save(os.path.join(out, '%08d_dsm.tif'%i))
 
-'''
-Pyrender 的offscreenRenderer 渲染效果不行
-TODO: 改为open3d
-'''
+
 def orth_3dtile_with_coords(meshes, bgcolor = (0,0,0.0,0.0), 
               lightcolor = (1.0,1.0,1.0), intensity=10, resolution = 0.2, out = '', is_xyz = True, transform = np.eye(4),  epsg = '4547'):
     meshes =  [ load_mesh(p) for p in meshes ]
@@ -864,6 +948,97 @@ def orth_3dtile_with_coords(meshes, bgcolor = (0,0,0.0,0.0),
     scene.clear()
     dsm = orth_depth_to_dsm(depth,camera_pose, camera_instance.get_projection_matrix())
     bounds = trimesh.transform_points(bounds, transform)
+    if is_xyz:
+        # trans1 = pyproj.Proj('EPSG:4978')
+        # trans2 = pyproj.Proj('EPSG:%d'%epsg)
+        trans = pyproj.Transformer.from_crs('EPSG:4978', 'EPSG:%d'%epsg)
+        y, x, z = trans.transform(bounds[:,0], bounds[:,1], bounds[:, 2])
+        dx = np.abs(x[1] - x[0])
+        dy = np.abs(y[1] - y[0])
+        xres = dx / width
+        yres = dy / height
+        geo = [ np.min(x), xres, 0, np.max(y), 0, -yres ]
+    else:
+        geo = [ bounds[0,0], resolution, 0, bounds[1,1], 0, -resolution ]
+    
+    basename = os.path.splitext(out)
+
+    dataset = gdal.GetDriverByName('GTiff').Create(basename[0] + '_dom.tif', width, height, 3, gdal.GDT_Byte)
+    dataset.SetGeoTransform(geo)
+    proj = osr.SpatialReference()
+    proj.ImportFromEPSG(epsg)
+    dataset.SetProjection(proj.ExportToWkt())
+    
+    for i in range(3): 
+        dataset.GetRasterBand(i+1).WriteArray( color[:,:,i])
+    # dataset.GetRasterBand(1).WriteArray( color[:,:,0]) 
+    # dataset.GetRasterBand(2).WriteArray( color[:,:,1])
+    # dataset.GetRasterBand(3).WriteArray( color[:,:,2])
+    dsmds = gdal.GetDriverByName('GTiff').Create(basename[0] + '_dsm.tif', width, height, 1, gdal.GDT_Float32)
+    dsmds.SetGeoTransform(geo)
+    dsmds.SetProjection(proj.ExportToWkt())
+    dsmds.GetRasterBand(1).WriteArray( dsm )
+
+    del dataset
+    del dsmds
+
+    return basename[0] + '_dom.tif', basename[0] + '_dsm.tif'
+
+
+def orth_invmesh_with_coords(meshes, bgcolor = (0,0,0.0,0.0), 
+              lightcolor = (1.0,1.0,1.0), intensity=10, resolution = 0.2, out = '', is_xyz = True, transform = np.eye(4),  epsg = '4547'):
+    meshes =  [ load_mesh(p) for p in meshes ]
+    tri_scene = trimesh.Scene(meshes)
+    # tri_scene.show()
+    invz = np.eye(4)
+    invz[2,2] = -1
+    # tri_scene = tri_scene.apply_transform(invz)
+    # tri_scene.show()
+    scene = pyrender.Scene(ambient_light=lightcolor, bg_color=bgcolor)
+    for geom in tri_scene.geometry.values():
+        mesh = pyrender.Mesh.from_trimesh(geom, smooth=False)
+        for p in mesh.primitives:
+            p.material.doubleSided = True
+        scene.add(mesh, pose=invz)
+    center_pose = scene.centroid
+    # center_pose[2] = - center_pose[2]
+    bounds = scene.bounds
+    # bounds[:,2] = - bounds[:,2]
+    # bounds[0,2], bounds[1,2] = bounds[1,2], bounds[0,2]
+    center_pose[2] = bounds[1,2] + 0.2 # 上方0.2m
+    length = bounds[1,:] - bounds[0,:]
+    xl = length[0] 
+    yl = length[1]
+    camera_pose = get_matrix(0, 0, 0, center_pose)
+    # camera_pose[2,2] = -1
+    camera_instance = pyrender.OrthographicCamera(xmag = xl / 2.0, ymag= yl/ 2.0, znear = 0.01, zfar = length[2] + 10 )
+    light = pyrender.DirectionalLight(color=lightcolor, intensity=intensity)
+   
+    # scene.add(pyrender.Mesh.from_trimesh(creation.box(bounds = scene.bounds)))
+    scene.add(light)
+    # import trimesh.creation
+    # geom  = get_orthographic_visual_geom(xmag = xl / 2.0, ymag= yl/ 2.0, znear = 0.01, zfar = length[2], matrix=camera_pose)
+    # scene.add(pyrender.Mesh.from_trimesh(geom))
+    scene.add(camera_instance,  pose=camera_pose)
+    # v = pyrender.Viewer(scene)
+
+    width  = int(xl / resolution + 1)
+    height = int(yl / resolution + 1)
+    render = pyrender.OffscreenRenderer(width, height)
+    color, depth = render.render(scene)
+    render.delete()
+    scene.clear()
+    dsm = orth_depth_to_dsm(depth,camera_pose, camera_instance.get_projection_matrix())
+    color = np.flip(color, axis=1)
+    dsm = np.flip(dsm, axis=1)
+    bounds = trimesh.transform_points(tri_scene.bounds, transform)
+    # import matplotlib.pyplot as plt
+    # plt.subplot(121)
+    # plt.imshow(color)
+    # plt.subplot(122)
+    # plt.imshow(depth)
+    # plt.show()
+
     if is_xyz:
         # trans1 = pyproj.Proj('EPSG:4978')
         # trans2 = pyproj.Proj('EPSG:%d'%epsg)
