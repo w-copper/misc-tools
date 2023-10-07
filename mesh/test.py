@@ -30,6 +30,6 @@
 
 import trimesh
 
-mesh = trimesh.load(r"D:\data\3dpointcloud\output.glb")
-
+mesh = trimesh.load(r"G:\江山图画\output\Tile_+-01_+015\Tout.glb")
+mesh.export(r'G:\江山图画\output\Tile_+-01_+015\t.obj')
 mesh.show()

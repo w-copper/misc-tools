@@ -41,7 +41,7 @@ def for_xuanen(root, output):
     dsms = []
     for i, s in tqdm.tqdm(list(enumerate(subs)), desc='rendering'):
         f = os.path.join(output, '%d.tif'%i)
-        domf, dsmf = mt.orth_3dtile_with_coords([s], transform=transform, epsg=4326, out=f, intensity=10, resolution=0.1)
+        domf, dsmf = mt.orth_3dtile_with_coords([s], transform=transform, epsg=4326, out=f, intensity=2, resolution=0.1)
         doms.append(domf)
         dsms.append(dsmf)
 
@@ -76,9 +76,33 @@ def for_xuanen_inv(root, output):
         doms.append(domf)
         dsms.append(dsmf)
 
+
+
+def for_jiangshan(root, output):
+    folders = os.listdir(root)
+    subs = []
+    for folder in folders:
+        if folder.startswith('Tile'):
+            f = os.path.join(root, folder, folder + '.json')
+            subs.append(f)
+    
+    root_json = os.path.join(root, 'tileset.json')
+
+    transform = mt.load_tileset_transform(root_json) 
+    os.makedirs(output, exist_ok=True)
+    doms = []
+    dsms = []
+    for i, s in tqdm.tqdm(list(enumerate(subs)), desc='rendering'):
+        f = os.path.join(output, '%d.tif'%i)
+        domf, dsmf = mt.orth_3dtile_with_coords([s], transform=transform, epsg=4326, out=f, intensity=10, resolution=0.1)
+        doms.append(domf)
+        dsms.append(dsmf)
+
+
 if __name__ == '__main__':
 
     # for_xuanen('E:/xuanen/data', 'E:/xuanen/domdsm')
-    for_xuanen_inv('E:/xuanen/data', 'E:/xuanen/domdsminv')
+    # for_xuanen_inv('E:/xuanen/data', 'E:/xuanen/domdsminv')
+    for_jiangshan('G:/江山图画/output', 'E:/jiangshan/domdsm')
     # build_vrt('E:/xuanen/domdsm')
     # files = glob.glob("D:/tmpy7dj1fk3/*.tif")

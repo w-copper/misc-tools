@@ -20,7 +20,7 @@ import tqdm
 import xmltodict
 import pyrender
 import PIL.Image as Image
-
+from pygltflib import GLTF2, Scene
 
 def load_ccobjs_to_trimesh(root_data_path, sub=None, ret_files = False):
     paths = os.listdir(root_data_path)
@@ -190,6 +190,8 @@ def load_b3dm_to_trimesh(pth, transform = None):
     tile = B3dm.from_array(tile_content)
     gltfb = tile.body.glTF.to_array()
     gltfio = BytesIO(gltfb.tobytes())
+    # glb = GLTF2.load_from_bytes(gltfb.tobytes())
+    # t = 0
     loaddict = gltf.load_glb(gltfio, merge_primitives=True)
     meshdict = loaddict['geometry']
     mesh = trimesh.Trimesh(**meshdict['GLTF'])
@@ -922,24 +924,44 @@ def render_loop(cfg, bgcolor = (0,0,1.0,0.0),
         Image.fromarray(dsm).save(os.path.join(out, '%08d_dsm.tif'%i))
 
 
-def orth_3dtile_with_coords(meshes, bgcolor = (0,0,0.0,0.0), 
-              lightcolor = (1.0,1.0,1.0), intensity=10, resolution = 0.2, out = '', is_xyz = True, transform = np.eye(4),  epsg = '4547'):
+def orth_3dtile_with_coords(meshes, bgcolor = (0.0,0.0,0.0), 
+              lightcolor = (1.0,1.0,1.0), intensity=5, resolution = 0.2, out = '', is_xyz = True, transform = np.eye(4),  epsg = '4547'):
+    # print(meshes)
+    
     meshes =  [ load_mesh(p) for p in meshes ]
     tri_scene = trimesh.Scene(meshes)
-    scene = pyrender.Scene.from_trimesh_scene(
-                tri_scene, bg_color=bgcolor, ambient_light=bgcolor
-            )
+    # tri_scene.show()
+    scene = pyrender.Scene(ambient_light=lightcolor, bg_color=bgcolor)
+    # export.export_mesh(tri_scene, out + '.obj', file_type='obj')
+    for geom in tri_scene.geometry.values():
+        # geom.show()
+        mesh = pyrender.Mesh.from_trimesh(geom, smooth=False)
+        for p in mesh.primitives:
+            p.material.doubleSided = True
+        scene.add(mesh)
+    # scene = pyrender.Scene.from_trimesh_scene(
+    #             tri_scene, bg_color=bgcolor, ambient_light=bgcolor
+    #         )
+    
     center_pose = tri_scene.centroid
     bounds = tri_scene.bounds
     center_pose[2] = bounds[1,2] + 0.2 # 上方0.2m
     length = bounds[1,:] - bounds[0,:]
     xl = length[0] 
     yl = length[1]
+    # print(xl, yl, center_pose)
+    if xl <= 1e-1 or yl <= 1e-1:
+        return None, None
     camera_pose = get_matrix(0, 0,0, center_pose)
-    camera_instance = pyrender.OrthographicCamera(xmag = xl / 2.0, ymag= yl/ 2.0, znear = 0.01, zfar = length[2] + 11 )
+    camera_instance = pyrender.OrthographicCamera(xmag = xl / 2.0, ymag= yl/ 2.0, znear = 0.01, zfar = length[2] + 10 )
     light = pyrender.DirectionalLight(color=lightcolor, intensity=intensity)
     scene.add(light)
     scene.add(camera_instance,  pose=camera_pose)
+    bounds[:,2] -= 20
+    scene.add(pyrender.Mesh.from_trimesh(creation.box(bounds=bounds), smooth=False))
+    # print(length[2] + 11)
+    # v = pyrender.Viewer(scene)
+    
     width  = int(xl / resolution + 1)
     height = int(yl / resolution + 1)
     render = pyrender.OffscreenRenderer(width, height)
@@ -1009,6 +1031,7 @@ def orth_invmesh_with_coords(meshes, bgcolor = (0,0,0.0,0.0),
     length = bounds[1,:] - bounds[0,:]
     xl = length[0] 
     yl = length[1]
+    
     camera_pose = get_matrix(0, 0, 0, center_pose)
     # camera_pose[2,2] = -1
     camera_instance = pyrender.OrthographicCamera(xmag = xl / 2.0, ymag= yl/ 2.0, znear = 0.01, zfar = length[2] + 10 )
