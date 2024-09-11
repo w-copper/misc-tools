@@ -69,10 +69,10 @@ def for_productions():
 
 if __name__ == '__main__':
 
-    root = 'E:/xuanen/domdsm'
+    root = 'E:/jiangshan/domdsm'
     doms = glob.glob(os.path.join(root, '*_dom.tif'))
 
-    outdir = 'E:/xuanen'
+    outdir = 'E:/jiangshan'
     geoms = []
 
     for dom in doms:
@@ -88,7 +88,7 @@ if __name__ == '__main__':
         srs = osr.SpatialReference(wkt=srs)
         srs.AutoIdentifyEPSG()
         epsg = srs.GetAuthorityCode(None)
-        print(epsg)
+        # print(epsg)
 
         # print(extent.area)
         geoms.append(extent)
@@ -96,5 +96,5 @@ if __name__ == '__main__':
     tables = gpd.GeoDataFrame({'geometry': geoms, 'dom': doms}, crs='EPSG:4326')
     os.makedirs(outdir, exist_ok=True)
     
-    tables.to_file(os.path.join(outdir, 'xuanen.geojson'), driver='GeoJSON')
+    tables.to_file(os.path.join(outdir, 'jiangshan.geojson'), driver='GeoJSON')
 
