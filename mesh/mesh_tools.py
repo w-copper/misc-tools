@@ -1125,17 +1125,14 @@ def orth_invmesh_with_coords(
     invz[2, 2] = -1
     # tri_scene = tri_scene.apply_transform(invz)
     # tri_scene.show()
-    scene = pyrender.Scene(ambient_light=lightcolor, bg_color=bgcolor)
+    scene = pyrender.Scene(bg_color=bgcolor)
     for geom in tri_scene.geometry.values():
         mesh = pyrender.Mesh.from_trimesh(geom, smooth=False)
         for p in mesh.primitives:
             p.material.doubleSided = True
         scene.add(mesh, pose=invz)
     center_pose = scene.centroid
-    # center_pose[2] = - center_pose[2]
     bounds = scene.bounds
-    # bounds[:,2] = - bounds[:,2]
-    # bounds[0,2], bounds[1,2] = bounds[1,2], bounds[0,2]
     center_pose[2] = bounds[1, 2] + 0.2  # 上方0.2m
     length = bounds[1, :] - bounds[0, :]
     xl = length[0]
@@ -1146,10 +1143,10 @@ def orth_invmesh_with_coords(
     camera_instance = pyrender.OrthographicCamera(
         xmag=xl / 2.0, ymag=yl / 2.0, znear=0.01, zfar=length[2] + 10
     )
-    light = pyrender.DirectionalLight(color=lightcolor, intensity=intensity)
+    # light = pyrender.DirectionalLight(color=lightcolor, intensity=intensity)
 
-    # scene.add(pyrender.Mesh.from_trimesh(creation.box(bounds = scene.bounds)))
-    scene.add(light)
+    # # scene.add(pyrender.Mesh.from_trimesh(creation.box(bounds = scene.bounds)))
+    # scene.add(light)
     # import trimesh.creation
     # geom  = get_orthographic_visual_geom(xmag = xl / 2.0, ymag= yl/ 2.0, znear = 0.01, zfar = length[2], matrix=camera_pose)
     # scene.add(pyrender.Mesh.from_trimesh(geom))
@@ -1159,7 +1156,7 @@ def orth_invmesh_with_coords(
     width = int(xl / resolution + 1)
     height = int(yl / resolution + 1)
     render = pyrender.OffscreenRenderer(width, height)
-    color, depth = render.render(scene)
+    color, depth = render.render(scene, flags=pyrender.RenderFlags.FLAT)
     render.delete()
     scene.clear()
     dsm = orth_depth_to_dsm(depth, camera_pose, camera_instance.get_projection_matrix())
@@ -1174,8 +1171,6 @@ def orth_invmesh_with_coords(
     # plt.show()
 
     if is_xyz:
-        # trans1 = pyproj.Proj('EPSG:4978')
-        # trans2 = pyproj.Proj('EPSG:%d'%epsg)
         trans = pyproj.Transformer.from_crs("EPSG:4978", "EPSG:%d" % epsg)
         y, x, z = trans.transform(bounds[:, 0], bounds[:, 1], bounds[:, 2])
         dx = np.abs(x[1] - x[0])

@@ -4,9 +4,14 @@ import trimesh
 import pyproj
 import PIL.Image as Image
 import trimesh.visual
+import os
+import json
+import xmltodict
+import shutil
+import argparse
 
 
-def lonlat2enu(lat_lon_alt, ref_point):
+def lonlat2enu(lonlat, ref_point):
     """
     将经纬度坐标转换为相对于参考点的ENU坐标。
     :param lat_lon_alt: 包含目标点纬度、经度和高度的元组或list。
@@ -54,75 +59,55 @@ def lonlat2enu(lat_lon_alt, ref_point):
         return R
 
     # 将参考点和目标点从经纬度转换到ECEF坐标
-    ecef_ref = np.array(lla2ecef.transform(ref_point[1], ref_point[0], 0)).reshape(
+    ecef_ref = np.array(lla2ecef.transform(ref_point[0], ref_point[1], 0)).reshape(
         3, -1
     )
 
-    ecef_target = np.array(
-        lla2ecef.transform(lat_lon_alt[:, 1], lat_lon_alt[:, 0], lat_lon_alt[:, 2])
-    )
+    ecef_target = np.array(lla2ecef.transform(lonlat[:, 1], lonlat[:, 0], lonlat[:, 2]))
 
     # 计算目标点相对于参考点的ECEF向量
     ecef_vector = ecef_target - ecef_ref
     # 生成ECEF到ENU的旋转矩阵
-    R = ecef_to_enu_matrix(ref_point[1], ref_point[0])
+    R = ecef_to_enu_matrix(ref_point[0], ref_point[1])
 
     # 将ECEF向量转换到ENU坐标系
     enu = R @ ecef_vector
 
     return enu.T
 
-    # 创建从ENU到ECEF的旋转矩阵
+
+def lonlat2local(lat_lon_alt, ref_point, epsg):
+    """
+    将经纬度坐标转换为相对于参考点的ENU坐标。
+    :param lat_lon_alt: 包含目标点纬度、经度和高度的元组或list。
+    :param ref_point: 包含参考点纬度、经度和高度的元组或list。
+    :return: ENU坐标系下的坐标。
+    """
+    llh2epsg = pyproj.Transformer.from_crs(
+        "EPSG:4326",
+        epsg,
+        always_xy=False,
+    )
+    local = np.array(
+        llh2epsg.transform(lat_lon_alt[:, 1], lat_lon_alt[:, 0], lat_lon_alt[:, 2])
+    )
+    local = local - ref_point
+    return local.T
 
 
-def coord_trans(srs_dict, x, y, z=0):
+def coord_trans_inv(srs_dict, points):
     srs = srs_dict["ModelMetadata"]["SRS"]
     if srs.startswith("EPSG:"):
-        proj1 = pyproj.CRS(srs)
-        proj2 = pyproj.CRS("EPSG:4326")
-        trans = pyproj.Transformer.from_crs(proj1, proj2, always_xy=True)
         origin = srs_dict["ModelMetadata"]["SRSOrigin"]
         origin = origin.split(",")
-        origin_xy = [float(origin[0]), float(origin[1])]
-        x = x + origin_xy[0]
-        y = y + origin_xy[1]
-        lon, lat = trans.transform(x, y)
-        return lon, lat
+        origin_xy = [float(origin[0]), float(origin[1]), 0]
+        origin_xy = np.array(origin_xy).reshape(3, 1)
+        points = lonlat2local(points, origin_xy, srs)
     elif srs.startswith("ENU"):
-        lla2ecef = pyproj.Transformer.from_crs(
-            "EPSG:4326", {"proj": "geocent", "ellps": "WGS84", "datum": "WGS84"}
-        )
-        ecef2lla = pyproj.Transformer.from_crs(
-            {"proj": "geocent", "ellps": "WGS84", "datum": "WGS84"}, "EPSG:4326"
-        )
         center = srs.split(":")[-1].split(",")
-        lat0 = np.deg2rad(float(center[0]))
-        lon0 = np.deg2rad(float(center[1]))
-        x0, y0, z0 = lla2ecef.transform(lat0, lon0, 0, radians=True)
-        # print(x0)
-        S = [
-            [-np.sin(lon0), np.cos(lon0), 0],
-            [
-                -np.sin(lat0) * np.cos(lon0),
-                -np.sin(lat0) * np.sin(lon0),
-                np.cos(lat0),
-            ],
-            [np.cos(lat0) * np.cos(lon0), np.cos(lat0) * np.sin(lon0), np.sin(lat0)],
-        ]
-        S = np.array(S)
-        # print(np.array([x, y, z]).reshape(3, -1))
-        dxyz = S.T @ np.array([x, y, z]).reshape(3, -1)
-        x = x0 + dxyz[0, :]
-        y = y0 + dxyz[1, :]
-        z = z0 + dxyz[2, :]
-        # print(x, y, z)
-        lat, lon, alt = ecef2lla.transform(x, y, z, radians=True)
-        lon = np.rad2deg(lon)
-        lat = np.rad2deg(lat)
-        if len(lon) == 1:
-            lon = lon[0]
-            lat = lat[0]
-        return lon, lat
+        center = np.array(center).astype(float)
+        points = lonlat2enu(points, center)
+    return points
 
 
 def create_polygon_mesh(points, image=None, res=0.05, upnormal=False):
@@ -177,23 +162,6 @@ def create_polygon_mesh(points, image=None, res=0.05, upnormal=False):
     return mesh
 
 
-def lonlat23857(points):
-    p = pyproj.Proj("epsg:4326")
-    ll = pyproj.Proj("epsg:3857")
-    trans = pyproj.Transformer.from_proj(p, ll)
-    xyz = trans.transform(points[:, 1], points[:, 0], points[:, 2])
-    return np.vstack(xyz).T
-
-
-def lonlat2car3(points):
-    trans = pyproj.Transformer.from_crs(
-        "epsg:4326",
-        {"proj": "geocent", "ellps": "WGS84", "datum": "WGS84"},
-    )
-    xyz = trans.transform(points[:, 1], points[:, 0], points[:, 2])
-    return np.vstack(xyz).T
-
-
 def anyimage_flatten(img):
     image = Image.open(img)
     image = np.array(image)
@@ -203,53 +171,44 @@ def anyimage_flatten(img):
 
     vstack_image1 = np.vstack([image, image1])
     vstack_image2 = np.vstack([image2, image3])
-    hstack_image = np.hstack([vstack_image1, vstack_image2])
-
-    return hstack_image
+    return np.hstack([vstack_image1, vstack_image2])
 
 
-def shp_to_mesh(shp_path, image=None, res=0.1, output_path=None):
-    pass
+def points_to_mesh(points, image=None, res=0.1, output_path=None, xml_path=None):
+    esjson = {"data": []}
+    with open(points, "r", encoding="utf-8") as f:
+        for line in f.readlines():
+            esjson["data"].append(
+                {
+                    "points": np.array(list(map(line.split(","), float))).reshape(
+                        -1, 3
+                    ),
+                }
+            )
+    esjson_to_mesh(
+        esjson, image=image, res=res, output_path=output_path, xml_path=xml_path
+    )
 
 
-import os
-import json
-
-
-def esjson_to_mesh(esjson_path, image=None, res=0.1, output_path=None):
+def esjson_to_mesh(esjson_path, image=None, res=0.1, output_path=None, xml_path=None):
     if output_path is None:
-        output_path = os.path.dirname(esjson_path)
-        output_path = os.path.join(output_path, "mesh")
+        output_path = "mesh"
     os.makedirs(output_path, exist_ok=True)
     mesh_path = os.path.join(output_path, "Data")
     os.makedirs(mesh_path, exist_ok=True)
-    with open(esjson_path, "r", encoding="utf-8") as f:
-        esjson = json.load(f)
-    center = None
-    image = anyimage_flatten(image)
-    image = Image.fromarray(image)
-    image.format = "jpeg"
-    for i, feature in enumerate(esjson["data"]):
-        points = feature["points"]
-        points = np.array(points)
-        if center is None:
+    if isinstance(esjson_path, str):
+        with open(esjson_path, "r", encoding="utf-8") as f:
+            esjson = json.load(f)
+    else:
+        esjson = esjson_path
+    if xml_path is None:
+        # center = None
+        for feature in esjson["data"]:
+            points = feature["points"]
+            points = np.array(points)
             center = np.mean(points, axis=0)
-        enu = lonlat2enu(points, center)
-        mesh = create_polygon_mesh(enu, image=image, res=res)
-        obji_path = os.path.join(mesh_path, f"Object_{i}")
-        os.makedirs(obji_path, exist_ok=True)
-        enu[:, 1] = -enu[:, 1]
-        mesh.vertices = enu[:, [0, 2, 1]]
-        obj_path = os.path.join(obji_path, f"Object_{i}.obj")
-        osgb_path = os.path.join(obji_path, f"Object_{i}.osgb")
-
-        mesh.export(obj_path)
-        os.system(
-            f"Z:/CVEO成果/3D-Software/software/osgconv.exe {obj_path} {osgb_path}"
-        )
-    with open(os.path.join(output_path, "metadata.xml"), "w", encoding="utf-8") as f:
-        f.write(
-            f"""<?xml version="1.0" encoding="UTF-8"?>
+            break
+        xmlstr = f"""<?xml version="1.0" encoding="UTF-8"?>
 <ModelMetadata version="1">
     <!--Spatial Reference System-->
     <SRS>ENU:{center[1]},{center[0]}</SRS>
@@ -259,8 +218,67 @@ def esjson_to_mesh(esjson_path, image=None, res=0.1, output_path=None):
         <ColorSource>Visible</ColorSource>
     </Texture>
 </ModelMetadata>"""
+        srs_dict = xmltodict.parse(xmlstr)
+    else:
+        with open(xml_path, "r", encoding="utf-8") as f:
+            srs_dict = xmltodict.parse(f.read())
+
+    image = anyimage_flatten(image)
+    image = Image.fromarray(image)
+    image.format = "jpeg"
+    for i, feature in enumerate(esjson["data"]):
+        points = feature["points"]
+        points = np.array(points)
+        enu = coord_trans_inv(srs_dict, points)
+        mesh = create_polygon_mesh(enu, image=image, res=res)
+        name = f"{i}_{int(np.random.rand() * 100000)}"
+        obji_path = os.path.join(mesh_path, f"Object_{name}")
+        os.makedirs(obji_path, exist_ok=True)
+        obj_path = os.path.join(obji_path, f"Object_{name}.obj")
+        mesh.export(obj_path)
+        enu[:, 1] = -enu[:, 1]
+        mesh.vertices = enu[:, [0, 2, 1]]
+        obj_temp_path = os.path.join(obji_path, f"Object_{name}_temp.obj")
+        mesh.export(obj_temp_path)
+        osgb_path = os.path.join(obji_path, f"Object_{name}.osgb")
+        os.system(
+            f"Z:/CVEO成果/3D-Software/software/osgconv.exe {obj_temp_path} {osgb_path}"
         )
+        os.remove(obj_temp_path)
+    if xml_path is None:
+        with open(
+            os.path.join(output_path, "metadata.xml"), "w", encoding="utf-8"
+        ) as f:
+            f.write(xmlstr)
+    elif not os.path.exists(os.path.join(output_path, "metadata.xml")):
+        shutil.copy(xml_path, os.path.join(output_path, "metadata.xml"))
 
 
 if __name__ == "__main__":
-    esjson_to_mesh("./mesh/polygons.json", "./water-5.jpg", 0.1, "output")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", "-i", type=str, default=None)
+    parser.add_argument("--image", "-i", type=str, default=None)
+    parser.add_argument("--res", "-r", type=float, default=0.1)
+    parser.add_argument("--output", "-o", type=str, default=None)
+    parser.add_argument("--xml", "-x", type=str, default=None)
+    parser.add_argument(
+        "--type", "-t", type=str, default="points", choices=["points", "esjson"]
+    )
+
+    args = parser.parse_args()
+    if args.type == "points":
+        points_to_mesh(
+            args.input,
+            image=args.image,
+            res=args.res,
+            output_path=args.output,
+            xml_path=args.xml,
+        )
+    elif args.type == "esjson":
+        esjson_to_mesh(
+            args.input,
+            image=args.image,
+            res=args.res,
+            output_path=args.output,
+            xml_path=args.xml,
+        )

@@ -9,6 +9,136 @@ import trimesh.creation as creation
 import shapely.geometry as sg
 import geopandas as gpd
 import shutil
+import tempfile
+import platform
+
+_search_path = os.environ.get("PATH", "")
+if platform.system() == "Windows":
+    # try to find Blender install on Windows
+    # split existing path by delimiter
+    _search_path = [i for i in _search_path.split(";") if len(i) > 0]
+    for pf in [r"C:\Program Files", r"C:\Program Files (x86)"]:
+        pf = os.path.join(pf, "Blender Foundation")
+        if os.path.exists(pf):
+            for p in os.listdir(pf):
+                if "Blender" in p:
+                    _search_path.append(os.path.join(pf, p))
+    _search_path = ";".join(_search_path)
+    print("searching for blender in: %s", _search_path)
+
+if platform.system() == "Darwin":
+    # try to find Blender on Mac OSX
+    _search_path = [i for i in _search_path.split(":") if len(i) > 0]
+    _search_path.append("/Applications/blender.app/Contents/MacOS")
+    _search_path.append("/Applications/Blender.app/Contents/MacOS")
+    _search_path.append("/Applications/Blender/blender.app/Contents/MacOS")
+    _search_path = ":".join(_search_path)
+    print("searching for blender in: %s", _search_path)
+
+_blender_executable = shutil.which("blender", path=_search_path)
+_clip_script_path = os.path.join(os.path.dirname(__file__), "blender_diff.py")
+_merge_script_path = os.path.join(os.path.dirname(__file__), "blender_merge.py")
+exists = _blender_executable is not None
+
+
+def lonlat2enu(lat_lon_alt, ref_point):
+    """
+    将经纬度坐标转换为相对于参考点的ENU坐标。
+    :param lat_lon_alt: 包含目标点纬度、经度和高度的元组或list。
+    :param ref_point: 包含参考点纬度、经度和高度的元组或list。
+    :return: ENU坐标系下的坐标。
+    """
+
+    # 创建经纬度到ECEF坐标的转换器
+    lla2ecef = pyproj.Transformer.from_crs(
+        "EPSG:4326",
+        {"proj": "geocent", "ellps": "WGS84", "datum": "WGS84"},
+        always_xy=False,
+    )
+
+    # 创建从ECEF到ENU的旋转矩阵
+    def ecef_to_enu_matrix(lat0, lon0):
+        lat0 = np.deg2rad(lat0)
+        lon0 = np.deg2rad(lon0)
+
+        R = np.array(
+            [
+                [-np.sin(lon0), np.cos(lon0), 0],
+                [
+                    -np.sin(lat0) * np.cos(lon0),
+                    -np.sin(lat0) * np.sin(lon0),
+                    np.cos(lat0),
+                ],
+                [
+                    np.cos(lat0) * np.cos(lon0),
+                    np.cos(lat0) * np.sin(lon0),
+                    np.sin(lat0),
+                ],
+            ]
+        )
+        # print(x0)
+        # S = [
+        #     [-np.sin(lon0), np.cos(lon0), 0],
+        #     [
+        #         -np.sin(lat0) * np.cos(lon0),
+        #         -np.sin(lat0) * np.sin(lon0),
+        #         np.cos(lat0),
+        #     ],
+        #     [np.cos(lat0) * np.cos(lon0), np.cos(lat0) * np.sin(lon0), np.sin(lat0)],
+        # ]
+        return R
+
+    # 将参考点和目标点从经纬度转换到ECEF坐标
+    ecef_ref = np.array(lla2ecef.transform(ref_point[1], ref_point[0], 0)).reshape(
+        3, -1
+    )
+
+    ecef_target = np.array(
+        lla2ecef.transform(lat_lon_alt[:, 1], lat_lon_alt[:, 0], lat_lon_alt[:, 2])
+    )
+
+    # 计算目标点相对于参考点的ECEF向量
+    ecef_vector = ecef_target - ecef_ref
+    # 生成ECEF到ENU的旋转矩阵
+    R = ecef_to_enu_matrix(ref_point[1], ref_point[0])
+
+    # 将ECEF向量转换到ENU坐标系
+    enu = R @ ecef_vector
+
+    return enu.T
+
+
+def lonlat2local(lat_lon_alt, ref_point, epsg):
+    """
+    将经纬度坐标转换为相对于参考点的ENU坐标。
+    :param lat_lon_alt: 包含目标点纬度、经度和高度的元组或list。
+    :param ref_point: 包含参考点纬度、经度和高度的元组或list。
+    :return: ENU坐标系下的坐标。
+    """
+    llh2epsg = pyproj.Transformer.from_crs(
+        "EPSG:4326",
+        epsg,
+        always_xy=False,
+    )
+    local = np.array(
+        llh2epsg.transform(lat_lon_alt[:, 1], lat_lon_alt[:, 0], lat_lon_alt[:, 2])
+    )
+    local = local - ref_point
+    return local.T
+
+
+def coord_trans_inv(points, srs_dict):
+    srs = srs_dict["ModelMetadata"]["SRS"]
+    if srs.startswith("EPSG:"):
+        origin = srs_dict["ModelMetadata"]["SRSOrigin"]
+        origin = origin.split(",")
+        origin_xy = [float(origin[0]), float(origin[1]), 0]
+        origin_xy = np.array(origin_xy).reshape(3, 1)
+        points = lonlat2local(points, origin_xy, srs)
+    elif srs.startswith("ENU"):
+        center = srs.split(":")[-1].split(",")
+        points = lonlat2enu(points, center)
+    return points
 
 
 def load_ccobjs_to_trimesh(root_data_path, sub=None):
@@ -161,10 +291,6 @@ def delete_tileset_block(tileset_path, blocks):
         json.dump(data, f, indent=4)
 
 
-def delete_area(mesh: trimesh.Trimesh, area: trimesh.Trimesh):
-    mesh.intersection(area)
-
-
 def set_point_bellow_ground(metadata_path, shp_path, polygon: sg.Polygon):
     shp_df: gpd.GeoDataFrame = gpd.read_file(shp_path)
     rel_objs = shp_df[shp_df.intersects(polygon)]
@@ -181,10 +307,88 @@ def set_point_bellow_ground(metadata_path, shp_path, polygon: sg.Polygon):
         points[idx, 2] = -999
 
 
-from scipy.spatial import KDTree
-from PIL import Image
+def clip_and_merge(
+    obj_path: str,
+    obj2_path: str,
+    clip_obj2: bool,
+    polygon: sg.Polygon,
+    zmin=None,
+    zmax=None,
+):
+    obj = trimesh.load(obj_path)
+    zmin = obj.bounds[2, 0] if zmin is None else zmin
+    zmax = obj.bounds[2, 1] if zmax is None else zmax
 
-# import numpy as np
+    area = trimesh.creation.extrude_polygon(polygon, zmax - zmin)
+    area.vertices[:, 2] = area.vertices[:, 2] + zmin
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tempdir:
+        temp_area = tempfile.NamedTemporaryFile(suffix=".obj", dir=tempdir)
+        temp_out1 = tempfile.NamedTemporaryFile(suffix=".obj", dir=tempdir)
+        temp_out2 = tempfile.NamedTemporaryFile(suffix=".obj", dir=tempdir)
+        temp_box = tempfile.NamedTemporaryFile(suffix=".obj", dir=tempdir)
+        temp_obj2 = tempfile.NamedTemporaryFile(suffix=".obj", dir=tempdir)
+        if clip_obj2:
+            box = trimesh.creation.box(bounds=obj.bounds)
+            box.export(temp_box.name)
+            os.system(
+                _blender_executable,
+                " --background --python "
+                + _clip_script_path
+                + " "
+                + obj2_path
+                + " "
+                + temp_box.name
+                + " "
+                + temp_obj2.name,
+            )
+            obj2_path = temp_obj2.name
+        area.export(temp_area.name)
+        os.system(
+            _blender_executable
+            + " --background --python "
+            + _clip_script_path
+            + " "
+            + obj_path
+            + " "
+            + temp_area.name
+            + " "
+            + temp_out1.name
+        )
+        os.system(
+            _blender_executable
+            + " --background --python "
+            + _merge_script_path
+            + " "
+            + temp_out1.name
+            + " "
+            + obj2_path
+            + " "
+            + temp_out2.name
+        )
+
+        mesh = trimesh.load(temp_out2.name)
+
+    return mesh
+
+
+def warp_clip_and_merge(
+    obj_root: str,
+    shp_path: str,
+    image_path: str,
+):
+    patch_df_path = os.path.join(obj_root, "patchs.geojson")
+    metadata_path = os.path.join(obj_root, "metadata.xml")
+    if not os.path.exists(patch_df_path):
+        cc_coord_convert(metadata_path, patch_df_path)
+    patch_df: gpd.GeoDataFrame = gpd.read_file(patch_df_path)
+    shp_df: gpd.GeoDataFrame = gpd.read_file(shp_path)
+    for i, row in patch_df.iterrows():
+        box = row["geometry"]
+        obj_path = row["obj"]
+        shps = shp_df[shp_df.intersects(box)]
+    pass
+
+
 if __name__ == "__main__":
     # shp_path = "e:/Data/上海项目/0419万达/clip_patch.shp"
     # shp_df: gpd.GeoDataFrame = gpd.read_file(shp_path)
@@ -193,57 +397,14 @@ if __name__ == "__main__":
     # tiles = obj1s["obj"].map(lambda x: os.path.basename(x).split(".")[0]).tolist()
     # delete_tileset_block(tileset_path, tiles)
     # # delete_tileset_block(tileset_path, shp_df["name"].tolist())
-    obj_path = "e:/Data/上海项目/0419万达/Production_obj_4/Data/Tile_+000_+010/Tile_+000_+010.obj"
+    obj_path = "e:/Data/上海项目/0419万达/Production_obj_3/Data/Tile_+001_+005/Tile_+001_+005.obj"
+    # http://e/Data/%E4%B8%8A%E6%B5%B7%E9%A1%B9%E7%9B%AE/0419%E4%B8%87%E8%BE%BE/Production_obj_3/Data/Tile_+002_+005/Tile_+002_+005.obj
     mesh: trimesh.Trimesh = trimesh.load(obj_path)
-    center = mesh.centroid
-    trans = np.eye(4)
-    trans[:3, 3] = center
-    box = trimesh.creation.box(extents=[50, 10, 30], transform=trans)
-    bound_box = trimesh.creation.box(bounds=mesh.bounds)
-    box.visual = trimesh.visual.ColorVisuals(
-        box, face_colors=np.array([[1, 0, 0, 0.5]] * box.faces.shape[0])
-    ).to_texture()
-
-    box.export("e:/Data/上海项目/0419万达/Production_obj_4/Data/Tile_+000_+010/box.obj")
-
-    # intersect = mesh.union(box, engine="blender")
-    # origin_uv = mesh.visual.uv
-    # # mesh.faces
-
-    # face_xyz = mesh.vertices[mesh.faces]
-    # face_center = face_xyz.mean(axis=-1)
-    # tree = KDTree(face_center, compact_nodes=True)
-    # # origin_uv = mesh.visual.uv
-
-    # inter_face_xyz = intersect.vertices[intersect.faces]
-    # inter_face_center = inter_face_xyz.mean(axis=-1)
-    # d, i = tree.query(inter_face_center, k=1, eps=1e-3)
-    # face_map_xyz = face_xyz[i]
-    # distance = inter_face_xyz[:, :, None, :] - face_map_xyz[:, None, :, :]
-    # distance = np.linalg.norm(distance, axis=-1)
-    # distance = np.argmin(distance, axis=-1)
-    # face_map_idx = mesh.faces[i]
-    # face_map_idx = np.take_along_axis(face_map_idx, distance, axis=-1)
-    # new_uv = np.zeros((intersect.vertices.shape[0], 2))
-    # new_uv[np.array(intersect.faces).flatten()] = origin_uv[face_map_idx.flatten()]
-
-    # # tree = KDTree(mesh.vertices, compact_nodes=True)
-    # # d, i = tree.query(intersect.vertices, k=1, eps=1e-3)
-
-    # # new_uv = origin_uv[i]
-
-    # # d, ni = tree.query(second_p, k=1, eps=1e-6)
-    # # new_uv[~correct_index] = 0
-
-    # intersect.visual = trimesh.visual.TextureVisuals(
-    #     uv=new_uv, material=mesh.visual.material
-    # )
-    # # image.save("e:/Data/上海项目/0419万达/Production_obj_4/Data/Tile_+000_+010/uv.png")
-    # intersect.export(
-    #     "e:/Data/上海项目/0419万达/Production_obj_4/Data/Tile_+000_+010/intersect.obj"
-    # )
-    # # trimesh.repair.fix_normals(intersect)
-
-    # scene = trimesh.Scene([box, intersect])
-    # scene.show()
-    # print(mesh.bounds)
+    waters = []
+    for i in range(7):
+        w: trimesh.Trimesh = trimesh.load(
+            f"local/output/Data/Object_{i}/Object_{i}.obj"
+        )
+        waters.append(w)
+    scene = trimesh.Scene([mesh, *waters])
+    scene.show()

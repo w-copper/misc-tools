@@ -1,16 +1,21 @@
 import bpy
 import os
+import sys
 
-# 设定OBJ文件的路径
-obj_file_1 = (
-    r"e:\Data\上海项目\0419万达\Production_obj_4\Data\Tile_+000_+010\Tile_+000_+010.obj"
-)
-obj_file_2 = r"e:\Data\上海项目\0419万达\Production_obj_4\Data\Tile_+000_+010\box.obj"
+result_obj_path = sys.argv[-1]
+obj_file_2 = sys.argv[-2]
+obj_file_1 = sys.argv[-3]
 
-# 导出结果的路径
-result_obj_path = (
-    r"e:\Data\上海项目\0419万达\Production_obj_4\Data\Tile_+000_+010\result.obj"
-)
+# # 设定OBJ文件的路径
+# obj_file_1 = (
+#     r"e:\Data\上海项目\0419万达\Production_obj_4\Data\Tile_+000_+010\Tile_+000_+010.obj"
+# )
+# obj_file_2 = r"e:\Data\上海项目\0419万达\Production_obj_4\Data\Tile_+000_+010\box.obj"
+
+# # 导出结果的路径
+# result_obj_path = (
+#     r"e:\Data\上海项目\0419万达\Production_obj_4\Data\Tile_+000_+010\result.obj"
+# )
 bpy.ops.wm.read_homefile()
 try:
     bpy.ops.object.mode_set(mode="OBJECT")

@@ -244,3 +244,9 @@ google/client_secret.json
 google/gdown_large.sh
 tmp*/
 roofs/
+output.obj
+files/build/
+*.pt
+piclibs/
+meshtools/nuitka-crash-report.xml
+files/test.csv
