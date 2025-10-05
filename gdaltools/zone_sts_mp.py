@@ -4,10 +4,11 @@ import shapely.geometry as sg
 import numpy as np
 import pyproj
 import os
-from osgeo import gdal, ogr
+from osgeo import gdal
 import typing
 from dataclasses import dataclass
 import tqdm
+from rasterio import features
 
 
 @dataclass
@@ -111,36 +112,32 @@ def zone_sts_one_geom(
             data = band.ReadAsArray(px, py, 1, 1).flatten()
         elif isinstance(geom, sg.Polygon):
             geom_bounds = geom.bounds
+            gt = ds.GetGeoTransform()
+
             # Convert the geometry bounds to pixel coordinates
             min_x = int((geom_bounds[0] - gt[0]) / gt[1])
             max_x = int((geom_bounds[2] - gt[0]) / gt[1])
-            min_y = int((geom_bounds[1] - gt[3]) / gt[5])
-            max_y = int((geom_bounds[3] - gt[3]) / gt[5])
+            max_y = int((geom_bounds[1] - gt[3]) / gt[5])
+            min_y = int((geom_bounds[3] - gt[3]) / gt[5])
             data = band.ReadAsArray(
                 min_x, min_y, max_x - min_x, max_y - min_y
             ).flatten()
-            # Create a mask for the geometry
-            x_size = max_x - min_x
-            y_size = max_y - min_y
-            mask = np.zeros((y_size, x_size), dtype=np.uint8)
-            # Convert the geometry to a raster
-            driver = ogr.GetDriverByName("MEM")
-            src_ds = driver.CreateDataSource("memData")
-            src_layer = src_ds.CreateLayer("memLayer", geom_type=ogr.wkbPolygon)
-            src_layer.CreateFeature(ogr.Feature(src_layer.GetLayerDefn()))
-            src_layer.SetFeature(ogr.Feature(src_layer.GetLayerDefn()))
-            src_layer.GetFeature(0).SetGeometryDirectly(geom.__geo_interface__)
-            src_layer.SyncToDisk()
-            mask = gdal.RasterizeLayer(
-                gdal.GetDriverByName("MEM").Create(
-                    "", x_size, y_size, 1, gdal.GDT_Byte
-                ),
-                [1],
-                src_layer,
-                burn_values=[1],
-            )[0].ReadAsArray()
-            # Apply the mask to the band data
-            data = data[mask.flatten() > 0]
+            # TODO: mask the data array with the geometry
+            # mask = features.rasterize(
+            #     [(geom, 1)],
+            #     out_shape=(max_y - min_y, max_x - min_x),
+            #     transform=(
+            #         gt[1],
+            #         0,
+            #         gt[0] + min_x * gt[1],
+            #         0,
+            #         gt[5],
+            #         gt[3] + max_y * gt[5],
+            #     ),
+            # )
+            # print(mask)
+            # data = data[mask.flatten() == 1]
+
         else:
             raise ValueError("Geometry must be a Point or Polygon")
         # Handle nodata values
@@ -198,7 +195,9 @@ def generate_geoms_from_file(
     gdf = gdf[gdf.intersects(raster_bound)]
 
     if buffer > 0:
-        gdf = gdf.to_crs(epsg=3857).buffer(buffer).to_crs(epsg=proj_obj.to_epsg())
+        gdf.geometry = (
+            gdf.to_crs(epsg=3857).buffer(buffer).to_crs(epsg=proj_obj.to_epsg())
+        )
 
     for _, row in gdf.iterrows():
         # print(idx)
@@ -265,6 +264,6 @@ if __name__ == "__main__":
         bands="all",
         stats=["min", "max", "mean", "median", "std", "sum", "count", "nodata_count"],
         nodata=None,
-        buffer=0,
+        buffer=20,
         output_path="D:/output.gpkg",
     )
